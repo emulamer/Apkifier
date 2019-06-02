@@ -20,6 +20,10 @@ using Org.BouncyCastle.X509.Store;
 using System.Security.Cryptography;
 using Org.BouncyCastle.Asn1.Cms;
 using System.Text.RegularExpressions;
+using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Utilities.IO.Pem;
+
+using OpenSsl = Org.BouncyCastle.OpenSsl;
 
 namespace Emulamer.Utils
 {
@@ -30,17 +34,49 @@ namespace Emulamer.Utils
         protected string _filename;
         protected ZipArchive _archive;
         private bool _sign;
+        private string _pemData;
+
+        /// <summary>
+        /// Returns the PEM data used to sign the APK
+        /// </summary>
+        public string PemData
+        {
+            get
+            {
+                return _pemData;
+            }
+        }
 
         /// <summary>
         /// Creates a new instance of Apkifier
         /// </summary>
         /// <param name="filename">The full path to the APK file</param>
         /// <param name="sign">True to sign the APK when Apkifier is disposed.</param>
-        public Apkifier(string filename, bool sign = true)
+        /// <param name="x509certificateData">The PEM data of the certificate to use with both public and private keys.  If null, a new, automatically created certificate will be used.</param>
+        public Apkifier(string filename, bool sign = true, string pemCertificateData = null)
         {
             _filename = filename;
             _sign = sign;
             _archive = ZipFile.Open(filename, ZipArchiveMode.Update);
+            if (pemCertificateData != null)
+            {
+                _pemData = pemCertificateData;
+                //test that the certificate loads before going further
+                AsymmetricKeyParameter pk;
+                LoadCert(_pemData, out pk);
+            }
+            else
+            {
+                _pemData = GenerateNewCertificatePEM();
+            }
+        }
+
+        public void LoadCert(byte[] certData)
+        {
+            using (MemoryStream ms = new MemoryStream(certData))
+            {
+                Pkcs12Store store = new Pkcs12Store(ms, new char[0]);
+            }
         }
 
         /// <summary>
@@ -50,6 +86,21 @@ namespace Emulamer.Utils
         public virtual bool FileExists(string targetPath)
         {
             return _archive.GetEntry(targetPath) != null;
+        }
+
+        /// <summary>
+        /// Writes the contents of a stream to a file in the APK
+        /// </summary>
+        /// <param name="fileData">The stream of data to store in the file</param>
+        /// <param name="targetPath">The full target path and filename within the APK</param>
+        /// <param name="overwrite">True to allow overwriting an existing file</param>
+        /// <param name="compress">True to compress the data.</param>
+        public virtual void Write(Stream fileData, string targetPath, bool overwrite = false, bool compress = true)
+        {
+            using (var stream = GetWriteStream(targetPath, overwrite, compress))
+            {
+                fileData.CopyTo(stream);
+            }
         }
 
         /// <summary>
@@ -132,21 +183,6 @@ namespace Emulamer.Utils
         }
 
         /// <summary>
-        /// Writes the contents of a stream to a file in the APK
-        /// </summary>
-        /// <param name="fileData">The stream of data to store in the file</param>
-        /// <param name="targetPath">The full target path and filename within the APK</param>
-        /// <param name="overwrite">True to allow overwriting an existing file</param>
-        /// <param name="compress">True to compress the data.</param>
-        public virtual void Write(Stream fileData, string targetPath, bool overwrite = false, bool compress = true)
-        {
-            using (var stream = GetWriteStream(targetPath, overwrite, compress))
-            {
-                fileData.CopyTo(stream);
-            }     
-        }
-
-        /// <summary>
         /// Reads a file from the APK as bytes
         /// </summary>
         /// <param name="targetPath">The full path and filename</param>
@@ -180,7 +216,7 @@ namespace Emulamer.Utils
         }
 
         #region Signature
-        protected void Sign()
+        public void Sign()
         {
             //delete all the META-INF stuff that exists already
             _archive.Entries.Where(x => x.FullName.StartsWith("META-INF")).ToList().ForEach(x =>
@@ -290,13 +326,10 @@ namespace Emulamer.Utils
         }
 
         /// <summary>
-        /// Get a self-signed signature block that java will load a JAR with
+        /// Creates a new X509 certificate and returns its data in PEM format
         /// </summary>
-        /// <param name="sfFileData">The data to sign</param>
-        /// <returns>The signature block (including certificate) for the data passed in</returns>
-        private static byte[] SignIt(byte[] sfFileData)
+        public string GenerateNewCertificatePEM()
         {
-            //create a new cert
             var randomGenerator = new CryptoApiRandomGenerator();
             var random = new SecureRandom(randomGenerator);
             var certificateGenerator = new X509V3CertificateGenerator();
@@ -314,14 +347,63 @@ namespace Emulamer.Utils
             keyPairGenerator.Init(keyGenerationParameters);
             var subjectKeyPair = keyPairGenerator.GenerateKeyPair();
             certificateGenerator.SetPublicKey(subjectKeyPair.Public);
+
             X509Certificate cert = certificateGenerator.Generate(subjectKeyPair.Private);
+
+            using (var writer = new StringWriter())
+            {
+                var pemWriter = new OpenSsl.PemWriter(writer);
+                                
+                pemWriter.WriteObject(new PemObject("CERTIFICATE", cert.GetEncoded()));
+                pemWriter.WriteObject(subjectKeyPair.Private);
+                return writer.ToString();
+            }
+        }
+
+        private static X509Certificate LoadCert(string pemData, out AsymmetricKeyParameter privateKey)
+        {
+            X509Certificate cert = null;
+            privateKey = null;
+            using (var reader = new StringReader(pemData))
+            {
+                var pemReader = new OpenSsl.PemReader(reader);
+                object pemObject = null;
+                while ((pemObject = pemReader.ReadObject()) != null)
+                {
+                    if (pemObject is X509Certificate)
+                    {
+                        cert = pemObject as X509Certificate;
+                    }
+                    else if (pemObject is AsymmetricCipherKeyPair)
+                    {
+                        privateKey = (pemObject as AsymmetricCipherKeyPair).Private;
+                    }
+                }
+            }
+            if (cert == null)
+                throw new System.Security.SecurityException("Certificate could not be loaded from PEM data.");
+
+            if (privateKey == null)
+                throw new System.Security.SecurityException("Private Key could not be loaded from PEM data.");
+
+            return cert;
+        }
+        /// <summary>
+        /// Get a signature block that java will load a JAR with
+        /// </summary>
+        /// <param name="sfFileData">The data to sign</param>
+        /// <returns>The signature block (including certificate) for the data passed in</returns>
+        private byte[] SignIt(byte[] sfFileData)
+        {
+            AsymmetricKeyParameter privateKey = null;
+            
+            var cert = LoadCert(_pemData, out privateKey);
 
             //create things needed to make the CmsSignedDataGenerator work
             var certStore = X509StoreFactory.Create("Certificate/Collection", new X509CollectionStoreParameters(new List<X509Certificate>() { cert }));
-            SubjectKeyIdentifier pubKeyID = new SubjectKeyIdentifier(SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(subjectKeyPair.Public));
             CmsSignedDataGenerator dataGen = new CmsSignedDataGenerator();
             dataGen.AddCertificates(certStore);
-            dataGen.AddSigner(subjectKeyPair.Private, cert, CmsSignedDataGenerator.EncryptionRsa, CmsSignedDataGenerator.DigestSha256);
+            dataGen.AddSigner(privateKey, cert, CmsSignedDataGenerator.EncryptionRsa, CmsSignedDataGenerator.DigestSha256);
 
             //content is detached- i.e. not included in the signature block itself
             CmsProcessableByteArray detachedContent = new CmsProcessableByteArray(sfFileData);

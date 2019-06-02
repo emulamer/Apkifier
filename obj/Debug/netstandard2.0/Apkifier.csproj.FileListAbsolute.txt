@@ -1,9 +1,0 @@
-C:\Users\VR\Desktop\platform-tools_r28.0.3-windows\code\QuestStopgap\Apkifier\bin\Debug\netstandard2.0\Apkifier.deps.json
-C:\Users\VR\Desktop\platform-tools_r28.0.3-windows\code\QuestStopgap\Apkifier\bin\Debug\netstandard2.0\Apkifier.dll
-C:\Users\VR\Desktop\platform-tools_r28.0.3-windows\code\QuestStopgap\Apkifier\bin\Debug\netstandard2.0\Apkifier.pdb
-C:\Users\VR\Desktop\platform-tools_r28.0.3-windows\code\QuestStopgap\Apkifier\obj\Debug\netstandard2.0\Apkifier.csprojAssemblyReference.cache
-C:\Users\VR\Desktop\platform-tools_r28.0.3-windows\code\QuestStopgap\Apkifier\obj\Debug\netstandard2.0\Apkifier.csproj.CoreCompileInputs.cache
-C:\Users\VR\Desktop\platform-tools_r28.0.3-windows\code\QuestStopgap\Apkifier\obj\Debug\netstandard2.0\Apkifier.AssemblyInfoInputs.cache
-C:\Users\VR\Desktop\platform-tools_r28.0.3-windows\code\QuestStopgap\Apkifier\obj\Debug\netstandard2.0\Apkifier.AssemblyInfo.cs
-C:\Users\VR\Desktop\platform-tools_r28.0.3-windows\code\QuestStopgap\Apkifier\obj\Debug\netstandard2.0\Apkifier.dll
-C:\Users\VR\Desktop\platform-tools_r28.0.3-windows\code\QuestStopgap\Apkifier\obj\Debug\netstandard2.0\Apkifier.pdb

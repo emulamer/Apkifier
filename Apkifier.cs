@@ -6,7 +6,6 @@ using System.Linq;
 using Org.BouncyCastle.Cms;
 using Org.BouncyCastle.X509;
 using System.Text;
-using System.Threading.Tasks;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Pkcs;
@@ -20,7 +19,6 @@ using Org.BouncyCastle.X509.Store;
 using System.Security.Cryptography;
 using Org.BouncyCastle.Asn1.Cms;
 using System.Text.RegularExpressions;
-using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Utilities.IO.Pem;
 
 using OpenSsl = Org.BouncyCastle.OpenSsl;
@@ -35,6 +33,15 @@ namespace Emulamer.Utils
         protected ZipArchive _archive;
         private bool _sign;
         private string _pemData;
+        private bool _hasChanges;
+        private bool _readOnly;
+        /// <summary>
+        /// Returns true if changes have been made
+        /// </summary>
+        public bool HasChanges
+        {
+            get { return _hasChanges; }
+        }
 
         /// <summary>
         /// Returns the PEM data used to sign the APK
@@ -47,17 +54,19 @@ namespace Emulamer.Utils
             }
         }
 
+
         /// <summary>
         /// Creates a new instance of Apkifier
         /// </summary>
         /// <param name="filename">The full path to the APK file</param>
         /// <param name="sign">True to sign the APK when Apkifier is disposed.</param>
         /// <param name="x509certificateData">The PEM data of the certificate to use with both public and private keys.  If null, a new, automatically created certificate will be used.</param>
-        public Apkifier(string filename, bool sign = true, string pemCertificateData = null)
+        public Apkifier(string filename, bool sign = true, string pemCertificateData = null, bool readOnly = false)
         {
             _filename = filename;
             _sign = sign;
-            _archive = ZipFile.Open(filename, ZipArchiveMode.Update);
+            _readOnly = readOnly;
+            
             if (pemCertificateData != null)
             {
                 _pemData = pemCertificateData;
@@ -69,7 +78,13 @@ namespace Emulamer.Utils
             {
                 _pemData = GenerateNewCertificatePEM();
             }
+            if (_readOnly)
+                _archive = ZipFile.OpenRead(_filename);
+            else
+                _archive = ZipFile.Open(_filename, ZipArchiveMode.Update);
         }
+
+        
 
         public void LoadCert(byte[] certData)
         {
@@ -97,6 +112,7 @@ namespace Emulamer.Utils
         /// <param name="compress">True to compress the data.</param>
         public virtual void Write(Stream fileData, string targetPath, bool overwrite = false, bool compress = true)
         {
+            _hasChanges = true;
             using (var stream = GetWriteStream(targetPath, overwrite, compress))
             {
                 fileData.CopyTo(stream);
@@ -112,6 +128,7 @@ namespace Emulamer.Utils
         /// <param name="compress">True to compress the data</param>
         public virtual void Write(string inputFileName, string targetPath, bool overwrite = false, bool compress = true)
         {
+            _hasChanges = true;
             using (FileStream fs = File.Open(inputFileName, FileMode.Open, FileAccess.Read))
             {
                 Write(fs, targetPath, overwrite, compress);
@@ -127,6 +144,7 @@ namespace Emulamer.Utils
         /// <returns></returns>
         public Stream GetWriteStream(string targetPath, bool overwrite = false, bool compress = true)
         {
+            _hasChanges = true;
             var entry = _archive.GetEntry(targetPath);
             if (entry != null)
             {
@@ -155,13 +173,18 @@ namespace Emulamer.Utils
             if (string.IsNullOrWhiteSpace(pattern))
                 throw new ArgumentException("Pattern must be specified.");
 
+
             List<ZipArchiveEntry> toDelete = new List<ZipArchiveEntry>();
             foreach (var entry in _archive.Entries)
             {
                 if (FilePatternMatch(entry.FullName, pattern))
                     toDelete.Add(entry);
             }
-            toDelete.ForEach(x=>x.Delete());
+            if (toDelete.Count > 0)
+            {
+                _hasChanges = true;
+                toDelete.ForEach(x => x.Delete());
+            }
         }
 
         /// <summary>
@@ -204,6 +227,7 @@ namespace Emulamer.Utils
         /// </summary>
         public virtual void CopyFileInto(string sourceFilePath, string destEntryPath)
         {
+            _hasChanges = true;
             // this is used for pre-compressed things like songs so no compression is best
             ZipArchiveEntry entry = _archive.CreateEntry(destEntryPath, CompressionLevel.NoCompression);
             using (Stream destStream = entry.Open())
@@ -218,46 +242,44 @@ namespace Emulamer.Utils
         #region Signature
         public void Sign()
         {
-            //delete all the META-INF stuff that exists already
-            _archive.Entries.Where(x => x.FullName.StartsWith("META-INF")).ToList().ForEach(x =>
-            {
-                x.Delete();
-            });
+            if (_readOnly)
+                throw new InvalidOperationException("APK is open in read-only mode.");
+
+            //flip the archive into readonly mode
+            _archive.Dispose();
+            _archive = ZipFile.OpenRead(_filename);
 
             MemoryStream msManifestFile = new MemoryStream();
+            MemoryStream msSigFile = new MemoryStream();
+
             MemoryStream msSignatureFileBody = new MemoryStream();
 
-            //create the MF file header
-            using (StreamWriter swManifest = GetSW(msManifestFile))
+            try
             {
-                swManifest.WriteLine("Manifest-Version: 1.0");
-                swManifest.WriteLine("Created-By: emulamer");
-                swManifest.WriteLine();
-            }
+                //create the MF file header
+                using (StreamWriter swManifest = GetSW(msManifestFile))
+                {
+                    swManifest.WriteLine("Manifest-Version: 1.0");
+                    swManifest.WriteLine("Created-By: emulamer");
+                    swManifest.WriteLine();
+                }
 
-            //so that we can do it in one pass, write the MF and SF line items at the same time to their respective streams
-            foreach (var ze in _archive.Entries)
-            {
-                WriteEntryHashes(ze, msManifestFile, msSignatureFileBody);
-            }
+                //so that we can do it in one pass, write the MF and SF line items at the same time to their respective streams
+                foreach (var ze in _archive.Entries.Where(x => !x.FullName.StartsWith("META-INF")))
+                {
+                    WriteEntryHashes(ze, msManifestFile, msSignatureFileBody);
+                }
 
-            //compute the hash on the entirety of the manifest file for the SF file
-            msManifestFile.Seek(0, SeekOrigin.Begin);
-            var manifestFileHash = _sha.ComputeHash(msManifestFile);
+                //compute the hash on the entirety of the manifest file for the SF file
+                msManifestFile.Seek(0, SeekOrigin.Begin);
+                var manifestFileHash = _sha.ComputeHash(msManifestFile);
 
-            //write out the MF file
-            msManifestFile.Seek(0, SeekOrigin.Begin);
-            var manifestEntry = _archive.CreateEntry("META-INF/MANIFEST.MF");
-            using (Stream s = manifestEntry.Open())
-            {
-                msManifestFile.CopyTo(s);
-            }
 
-            //write the SF to memory then copy it out to the actual file- contents will be needed later to use for signing, don't want to hit the zip stream twice
-            var signaturesEntry = _archive.CreateEntry("META-INF/BS.SF");
-            byte[] sigFileBytes = null;
-            using (MemoryStream msSigFile = new MemoryStream())
-            {
+
+                //write the SF to memory then copy it out to the actual file- contents will be needed later to use for signing, don't want to hit the zip stream twice
+                
+                byte[] sigFileBytes = null;
+
                 using (StreamWriter swSignatureFile = GetSW(msSigFile))
                 {
                     swSignatureFile.WriteLine("Signature-Version: 1.0");
@@ -268,25 +290,62 @@ namespace Emulamer.Utils
                 msSignatureFileBody.Seek(0, SeekOrigin.Begin);
                 msSignatureFileBody.CopyTo(msSigFile);
                 msSigFile.Seek(0, SeekOrigin.Begin);
+                sigFileBytes = msSigFile.ToArray();
+
+
+                //get the key block (all the hassle distilled into one line), then write it out to the RSA file
+                byte[] keyBlock = SignIt(sigFileBytes);
+
+                //flip the archive back into update mode so we can write
+                _archive.Dispose();
+                _archive = ZipFile.Open(_filename, ZipArchiveMode.Update);
+
+                _hasChanges = true;
+                //delete all the META-INF stuff that exists already
+                var toDelete = _archive.Entries.Where(x => x.FullName.StartsWith("META-INF")).ToList();
+                if (toDelete.Count > 0)
+                {
+                    toDelete.ForEach(x =>
+                    {
+                        x.Delete();
+                    });
+                }
+               
+                //write the 3 files                
+                msManifestFile.Seek(0, SeekOrigin.Begin);
+                
+                var manifestEntry = _archive.CreateEntry("META-INF/MANIFEST.MF");
+                using (Stream s = manifestEntry.Open())
+                {
+                    msManifestFile.CopyTo(s);
+                }
+
+                var signaturesEntry = _archive.CreateEntry("META-INF/BS.SF");
                 using (Stream s = signaturesEntry.Open())
                 {
                     msSigFile.CopyTo(s);
                 }
-                sigFileBytes = msSigFile.ToArray();
-            }
 
-            //get the key block (all the hassle distilled into one line), then write it out to the RSA file
-            byte[] keyBlock = SignIt(sigFileBytes);
-            var rsaEntry = _archive.CreateEntry("META-INF/BS.RSA");            
-            using (Stream blockStream = rsaEntry.Open())
+                var rsaEntry = _archive.CreateEntry("META-INF/BS.RSA");
+                using (Stream blockStream = rsaEntry.Open())
+                {
+                    blockStream.Write(keyBlock, 0, keyBlock.Length);
+                }
+
+            }
+            finally
             {
-                blockStream.Write(keyBlock, 0, keyBlock.Length);
+                if (msManifestFile != null)
+                    msManifestFile.Dispose();
+                if (msSignatureFileBody != null)
+                    msSignatureFileBody.Dispose();
+                if (msManifestFile != null)
+                    msManifestFile.Dispose();
+                if (msSigFile != null)
+                    msSigFile.Dispose();
             }
 
-            msManifestFile.Dispose();
-            msManifestFile = null;
-            msSignatureFileBody.Dispose();
-            msSignatureFileBody = null;
+
         }
 
         /// <summary>
@@ -430,6 +489,17 @@ namespace Emulamer.Utils
             return new StreamWriter(stream, _encoding, 1024, true);
         }
 
+        /// <summary>
+        /// Gets the file size of a specific file
+        /// </summary>
+        public Int64 GetFileSize(string filename)
+        {
+            var entry = _archive.GetEntry(filename);
+            if (entry == null)
+                throw new FileNotFoundException();
+            return entry.CompressedLength;
+        }
+
         #endregion
 
         #region IDisposable Support
@@ -441,7 +511,8 @@ namespace Emulamer.Utils
             {
                 if (disposing)
                 {
-                    Sign();
+                    if (_sign && _hasChanges && !_readOnly)
+                        Sign();
                     if (_archive != null)
                     {
                         _archive.Dispose();

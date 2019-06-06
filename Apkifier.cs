@@ -100,7 +100,17 @@ namespace Emulamer.Utils
         /// <param name="targetPath">The full path and filename</param>
         public virtual bool FileExists(string targetPath)
         {
-            return _archive.GetEntry(targetPath) != null;
+            return GetEntry(targetPath) != null;
+        }
+
+        private ZipArchiveEntry GetEntry(string filename)
+        {
+            foreach (var e in _archive.Entries)
+            {
+                if (e.FullName.ToLower() == filename.ToLower())
+                    return e;
+            }
+            return null;
         }
 
         /// <summary>
@@ -145,7 +155,7 @@ namespace Emulamer.Utils
         public Stream GetWriteStream(string targetPath, bool overwrite = false, bool compress = true)
         {
             _hasChanges = true;
-            var entry = _archive.GetEntry(targetPath);
+            var entry = GetEntry(targetPath);
             if (entry != null)
             {
                 if (!overwrite)
@@ -212,7 +222,7 @@ namespace Emulamer.Utils
         /// <returns>The comtent of the file as bytes</returns>
         public byte[] Read(string targetPath)
         {
-            var entry = _archive.GetEntry(targetPath);
+            var entry = GetEntry(targetPath);
             if (entry == null)
                 throw new FileNotFoundException();
 
@@ -494,7 +504,7 @@ namespace Emulamer.Utils
         /// </summary>
         public Int64 GetFileSize(string filename)
         {
-            var entry = _archive.GetEntry(filename);
+            var entry = GetEntry(filename);
             if (entry == null)
                 throw new FileNotFoundException();
             return entry.CompressedLength;

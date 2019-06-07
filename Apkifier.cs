@@ -25,7 +25,7 @@ using OpenSsl = Org.BouncyCastle.OpenSsl;
 
 namespace Emulamer.Utils
 {
-    public class Apkifier : IDisposable
+    public class Apkifier : IDisposable, IApkFileIO
     {
         private SHA1 _sha = SHA1Managed.Create();
         private UTF8Encoding _encoding = new UTF8Encoding(false);
@@ -53,7 +53,11 @@ namespace Emulamer.Utils
                 return _pemData;
             }
         }
-
+        public bool IsReadOnly
+        {
+            get
+            { return _readOnly; }
+        }
 
         /// <summary>
         /// Creates a new instance of Apkifier
@@ -66,7 +70,7 @@ namespace Emulamer.Utils
             _filename = filename;
             _sign = sign;
             _readOnly = readOnly;
-            
+
             if (pemCertificateData != null)
             {
                 _pemData = pemCertificateData;
@@ -82,9 +86,10 @@ namespace Emulamer.Utils
                 _archive = ZipFile.OpenRead(_filename);
             else
                 _archive = ZipFile.Open(_filename, ZipArchiveMode.Update);
+            
         }
 
-        
+
 
         public void LoadCert(byte[] certData)
         {
@@ -139,10 +144,17 @@ namespace Emulamer.Utils
         public virtual void Write(string inputFileName, string targetPath, bool overwrite = false, bool compress = true)
         {
             _hasChanges = true;
-            using (FileStream fs = File.Open(inputFileName, FileMode.Open, FileAccess.Read))
+            if (overwrite )
             {
-                Write(fs, targetPath, overwrite, compress);
-            }          
+                var entry = _archive.GetEntry(targetPath);
+                if (entry != null)
+                    entry.Delete();
+            }
+            _archive.CreateEntryFromFile(inputFileName, targetPath, compress ? CompressionLevel.Optimal : CompressionLevel.NoCompression);
+            //using (FileStream fs = File.Open(inputFileName, FileMode.Open, FileAccess.Read))
+            //{
+            //    Write(fs, targetPath, overwrite, compress);
+            //}
         }
 
         /// <summary>
@@ -287,7 +299,7 @@ namespace Emulamer.Utils
 
 
                 //write the SF to memory then copy it out to the actual file- contents will be needed later to use for signing, don't want to hit the zip stream twice
-                
+
                 byte[] sigFileBytes = null;
 
                 using (StreamWriter swSignatureFile = GetSW(msSigFile))
@@ -320,10 +332,10 @@ namespace Emulamer.Utils
                         x.Delete();
                     });
                 }
-               
+
                 //write the 3 files                
                 msManifestFile.Seek(0, SeekOrigin.Begin);
-                
+
                 var manifestEntry = _archive.CreateEntry("META-INF/MANIFEST.MF");
                 using (Stream s = manifestEntry.Open())
                 {
@@ -385,7 +397,7 @@ namespace Emulamer.Utils
                     {
                         swSFFile.WriteLine($"Name: {sourceFile.FullName}");
                         swSFFile.WriteLine($"SHA1-Digest: {hashOfMFSection}");
-                        swSFFile.WriteLine(); 
+                        swSFFile.WriteLine();
                     }
 
                     msSection.Seek(0, SeekOrigin.Begin);
@@ -422,7 +434,7 @@ namespace Emulamer.Utils
             using (var writer = new StringWriter())
             {
                 var pemWriter = new OpenSsl.PemWriter(writer);
-                                
+
                 pemWriter.WriteObject(new PemObject("CERTIFICATE", cert.GetEncoded()));
                 pemWriter.WriteObject(subjectKeyPair.Private);
                 return writer.ToString();
@@ -465,7 +477,7 @@ namespace Emulamer.Utils
         private byte[] SignIt(byte[] sfFileData)
         {
             AsymmetricKeyParameter privateKey = null;
-            
+
             var cert = LoadCert(_pemData, out privateKey);
 
             //create things needed to make the CmsSignedDataGenerator work
